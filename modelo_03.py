@@ -8,7 +8,19 @@ from OpenGL.GLU import *
 from OpenGL.GLUT import *
 import sys, math, time
 import numpy as np
+'''
+Este bloque define todas las variables globales del programa que controlan la escena:
+Dimensiones de la ventana.
 
+. Ángulos y distancia de la cámara para el modo orbital.
+. Estado del mouse para detectar el arrastre (golpe de la bola).
+. Parámetros físicos de la mesa y las bolas, incluyendo tamaño, rozamiento y timestep.
+. Arreglo global de bolas, donde cada bola tiene posición, velocidad y color.
+
+Estas variables actúan como “estado compartido” entre la lógica física, el render y los controles
+del usuario. Mantener esto organizado permite que el motor 3D funcione de manera coherente
+en todo momento.
+'''
 # --------- Estado global ----------
 win_w, win_h = 1000, 640
 cam_angle_x = 25.0
@@ -38,6 +50,16 @@ light_pos = np.array([ -5.0, 10.0, 5.0, 1.0 ])  # posicion de la luz (para sombr
 
 # lista de bolas: cada bola es dict con pos (np.array), vel (np.array), color (tuple)
 balls = []
+'''
+La función reset_balls() inicializa todas las bolas de la mesa:
+. Crea la bola blanca al frente.
+. Genera un triángulo de bolas de colores colocado como un rack simplificado.
+. Cada bola se representa con un diccionario: posición (np.array), velocidad y color.
+
+Este diseño hace fácil modificar el estado de cada bola, además de soportar
+un número variable de bolas gracias al uso de listas. Esta función se llama al inicio
+del programa y cuando el usuario presiona la tecla 'r'.
+'''
 
 # bola blanca index 0
 def reset_balls():
@@ -65,6 +87,14 @@ def reset_balls():
             idx += 1
 
 reset_balls()
+'''
+Estas funciones son utilidades matemáticas fundamentales:
+.. length(v): calcula la magnitud de un vector.
+.. normalize(v): retorna el vector normalizado (dirección pura).
+
+Se usan repetidamente en física (colisiones) y al calcular direcciones del tiro.
+Permiten mantener la lógica más limpia y evitar repetir cálculos de raíz cuadrada.
+'''
 
 # ---------- utilidades ----------
 def length(v):
@@ -76,6 +106,20 @@ def normalize(v):
     return v / n
 
 # matriz de proyección de sombra sobre plano ax+by+cz+d = 0 y luz L
+'''
+Esta función construye una matriz de proyección de sombras en un plano dado,
+usando la posición de la luz como punto de origen.
+
+Implementa la técnica clásica de “shadow projection matrix”, donde:
+. Se usa la ecuación del plano ax + by + cz + d = 0.
+. Se combinan los coeficientes con la posición de la luz para formar
+  una matriz 4x4 que aplasta el objeto hacia el plano.
+. El resultado es una sombra 100% geométrica (sin shaders).
+
+OpenGL espera la matriz en formato column-major, por eso se retorna la transpuesta.
+Es una técnica típica en graficación cuando se usa el pipeline fijo.
+'''
+
 def shadow_matrix(plane, lightpos):
     a,b,c,d = plane
     lx,ly,lz,lw = lightpos
@@ -104,6 +148,18 @@ def shadow_matrix(plane, lightpos):
 
 # plano Y = 0 -> 0*x + 1*y + 0*z + 0 = 0
 plane = (0.0, 1.0, 0.0, 0.0)
+'''
+Aquí se configura todo el estado base de OpenGL:
+. Color de fondo.
+. Habilitar el buffer de profundidad.
+. Activar normalización automática de normales.
+. Habilitar materiales y el modelo de iluminación fija.
+. Configurar la luz GL_LIGHT0 con ambiente, difusa y especular.
+. Ajustar el brillo (shininess) para que las bolas tengan reflejos.
+
+Este bloque es esencial porque define cómo toda la escena será iluminada y
+renderizada. Sin esta configuración, las bolas no tendrían brillo ni volumen.
+'''
 
 # ---------- OpenGL inicial ----------
 def init_gl():
@@ -125,6 +181,17 @@ def init_gl():
     # material brillante para las bolas
     glMaterialfv(GL_FRONT, GL_SPECULAR, [0.8,0.8,0.8,1.0])
     glMaterialf(GL_FRONT, GL_SHININESS, 64.0)
+'''
+Esta función dibuja la mesa de billar:
+. Pintura verde para el área de juego.
+. Borde perimetral (cushions) en color oscuro.
+. Se define una normal vertical para iluminación correcta.
+. Se usa OpenGL inmediato (glBegin/glEnd), típico del pipeline fijo.
+
+La mesa es un plano simple pero bien texturizado con formas y colores que
+permiten distinguir el área útil del borde. También es el plano donde se proyectan
+las sombras de las bolas.
+'''
 
 # ---------- dibujado ----------
 def draw_table():
@@ -161,6 +228,15 @@ def draw_table():
     glVertex3f(-half_w,-0.0,-half_l); glVertex3f(half_w,-0.0,-half_l)
     glVertex3f(half_w,0.6,-half_l + CUSHION); glVertex3f(-half_w,0.6,-half_l + CUSHION)
     glEnd()
+'''
+Dibuja una bola individual usando glutSolidSphere.
+. Traslada la matriz actual a la posición de la bola.
+. Aplica su color.
+. Utiliza iluminación y el material brillante definido en init_gl().
+
+La esfera tiene suficientes subdivisiones (40x40) para verse suave.
+Cada bola hereda reflexión especular, lo que da apariencia realista estilo billar.
+'''
 
 def draw_ball(ball):
     glPushMatrix()
@@ -188,6 +264,20 @@ def draw_shadow_for_ball(ball, shadow_mat):
     glutSolidSphere(BALL_RADIUS, 20, 20)
     glEnable(GL_LIGHTING)
     glPopMatrix()
+'''
+Esta función avanza la simulación física:
+1. Actualiza la posición de cada bola usando su velocidad.
+2. Aplica fricción multiplicando la velocidad por un factor menor que 1.
+3. Detecta colisiones contra las paredes de la mesa y refleja la velocidad.
+4. Calcula colisiones bola-bola:
+   .Mide distancia entre centros.
+   . Ajusta el solapamiento moviendo cada bola.
+   . Intercambia la componente de velocidad en la dirección del impacto (colisión elástica).
+   . Funciona bien porque todas las bolas tienen masas iguales.
+
+Este es un motor de física básico pero funcional para simular billar,
+y usa matemáticas vectoriales con numpy para mejorar rendimiento y claridad.
+'''
 
 # ---------- fisica ----------
 def step_physics(dt):
@@ -246,6 +336,15 @@ def step_physics(dt):
                 vb_norm = nb * dirn
                 a['vel'] += (vb_norm - va_norm)
                 b['vel'] += (va_norm - vb_norm)
+'''
+Esta función detecta clics y arrastres del mouse:
+. Al presionar, guarda la posición inicial.
+. Al soltar, mide la distancia arrastrada para determinar “potencia”.
+. Genera un vector de dirección y actualiza la velocidad de la bola blanca.
+
+Simula el comportamiento de un taco de billar: mientras más arrastre,
+más fuerza tiene el golpe, y la dirección se obtiene del movimiento en pantalla.
+'''
 
 # ---------- eventos input ----------
 def mouse(button, state, x, y):
@@ -284,6 +383,15 @@ def mouse(button, state, x, y):
 def motion(x,y):
     # opcional: podríamos visualizar power/dirección en HUD; por simplicidad no hacemos nada
     pass
+'''
+Maneja la entrada por teclado:
+. 'q' o ESC: salir.
+. 'p': pausa la física.
+. 'r': reinicia todas las bolas.
+. '+' y '-': acercan o alejan la cámara.
+
+Permite al usuario manipular la simulación sin interferir con la física.
+'''
 
 def keyboard(key, x, y):
     global cam_angle_x, cam_angle_y, cam_dist, paused
@@ -298,6 +406,13 @@ def keyboard(key, x, y):
         cam_dist = max(3.0, cam_dist - 1.0)
     elif k == '-':
         cam_dist = min(60.0, cam_dist + 1.0)
+'''
+Controla la cámara orbital mediante las teclas flecha:
+. LEFT/RIGHT rotan alrededor del eje Y.
+. UP/DOWN inclinan la vista (ángulo X).
+
+La cámara se calcula usando gluLookAt, permitiendo una navegación 3D intuitiva.
+'''
 
 def special(key, x, y):
     global cam_angle_x, cam_angle_y
@@ -313,6 +428,21 @@ def special(key, x, y):
 # ---------- display ----------
 last_time = time.time()
 accum = 0.0
+'''
+Es la función central del renderizado:
+1. Calcula el tiempo transcurrido (delta time).
+2. Avanza la física con timestep fijo para estabilidad.
+3. Limpia buffers y posiciona la cámara con gluLookAt.
+4. Actualiza la luz.
+5. Dibuja la mesa.
+6. Construye la matriz de sombra.
+7. Renderiza primero las sombras (blending).
+8. Dibuja las bolas con iluminación.
+9. Llama a glutSwapBuffers() para refrescar pantalla.
+
+Es el “ciclo de juego” del programa — aquí se combinan física, cámara y dibujo
+para producir el resultado final cada frame.
+'''
 
 def display():
     global last_time, accum
@@ -370,6 +500,11 @@ def display():
 
     glutSwapBuffers()
     glutPostRedisplay()
+'''
+Ajusta el viewport y recalcula la proyección cuando la ventana cambia de tamaño.
+Usa gluPerspective para mantener una vista 3D correcta independientemente
+de la resolución. Esto evita distorsiones.
+'''
 
 def reshape(w,h):
     global win_w, win_h
@@ -379,6 +514,18 @@ def reshape(w,h):
     glLoadIdentity()
     gluPerspective(45.0, float(w)/float(h if h>0 else 1), 0.1, 100.0)
     glMatrixMode(GL_MODELVIEW)
+'''
+Función principal del programa:
+. Inicializa GLUT.
+. Configura doble buffer, color y profundidad.
+. Crea la ventana.
+. Llama a init_gl() para configurar OpenGL.
+. Registra callbacks: display, mouse, teclado, reshape, etc.
+. Entra al loop principal de GLUT.
+
+Este bloque pone en marcha todo el sistema. GLUT maneja los eventos y llama
+automáticamente a display() en cada frame, permitiendo que la simulación sea continua.
+'''
 
 def main():
     glutInit(sys.argv)
